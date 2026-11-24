@@ -80,6 +80,54 @@ const documentos = (path, tipo, local) => ({
   colunas: COLUNAS_DOCUMENTO,
 });
 
+// ---------- Tesouro Transparente (dados abertos, sem chave) ----------
+// Conjunto "Emendas Parlamentares Individuais e de Bancada" do CKAN do Tesouro: um CSV nacional (Latin-1, ";",
+// vírgula decimal) com uma linha por ordem bancária. Filtra o município pelo código IBGE e grava as ordens
+// a partir de EMENDAS_DESDE (padrão 2025) no ano corrente, como um cadastro acumulado.
+const CKAN_EMENDAS = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=emendas-parlamentares-individuais-e-de-bancada";
+const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+
+async function emendasDoTesouro({ tipos }) {
+  const ibge = process.env.MUNICIPIO_IBGE || "5220058";              // São João da Paraúna-GO
+  const desde = Number(process.env.EMENDAS_DESDE) || 2025;
+  const pacote = await (await fetch(CKAN_EMENDAS)).json();
+  const recurso = pacote.result?.resources?.find((r) => /csv/i.test(r.format));
+  if (!recurso) throw new Error("o Tesouro não informou o arquivo CSV das emendas");
+  const resp = await fetch(recurso.url);
+  if (!resp.ok) throw new Error(`download do CSV do Tesouro: ${resp.status}`);
+  const linhas = new TextDecoder("latin1").decode(await resp.arrayBuffer()).split(/\r?\n/);
+  const cab = linhas[0].split(";");
+  const col = (nome) => { const i = cab.findIndex((c) => c.trim().toLowerCase() === nome.toLowerCase()); if (i < 0) throw new Error(`coluna "${nome}" não encontrada no CSV do Tesouro`); return i; };
+  const C = { ibge: col("Código IBGE"), ano: col("Ano"), mes: col("Mês"), ob: col("OB"), cnpj: col("CNPJ do Favorecido"), favorecido: col("Nome Favorecido"), tipo: col("Nome Emenda"), especial: col("Transferência Especial"), categoria: col("Categoria Econômica Despesa"), valor: col("Valor") };
+  const cnpj = (v) => v.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+  const valor = (v) => Number(v.replace(/\./g, "").replace(",", "."));
+  const registros = [];
+  for (const l of linhas.slice(1)) {
+    const c = l.split(";");
+    if (c[C.ibge] !== ibge || Number(c[C.ano]) < desde || !tipos.includes(c[C.tipo])) continue;
+    const mes = MESES.indexOf(c[C.mes].toLowerCase()) + 1;
+    registros.push({
+      chave: c[C.ob],
+      dados: {
+        "Ordem bancária": c[C.ob],
+        "Ano": c[C.ano],
+        "Mês": mes ? `${String(mes).padStart(2, "0")}/${c[C.ano]}` : c[C.mes],
+        "Tipo de emenda": c[C.tipo],
+        "Esfera": "Federal",
+        "Favorecido": c[C.favorecido],
+        "CNPJ do favorecido": cnpj(c[C.cnpj]),
+        "Transferência especial": c[C.especial],
+        "Categoria econômica": c[C.categoria],
+        "Valor pago": valor(c[C.valor]).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }),
+        "Fonte": "Tesouro Nacional",
+      },
+      _ordem: Number(c[C.ano]) * 100 + mes,
+    });
+  }
+  // Mais recentes primeiro.
+  return registros.sort((a, b) => b._ordem - a._ordem).map(({ _ordem, ...r }) => r);
+}
+
 export const DATASETS = {
   // Totais da página inicial do portal ("Receitas Recebidas 2026" / "Despesas Liquidadas 2026").
   resumo: {
@@ -283,6 +331,33 @@ export const DATASETS = {
       ["Objeto", "objeto"],
       ["Natureza da receita", "naturezaDaReceita"],
     ],
+  },
+  // Emendas parlamentares recebidas (esfera federal ou estadual; individual, de bancada, de comissão ou de
+  // relator). O detalhe do portal traz os lançamentos de receita, os empenhos e os arquivos do convênio.
+  "emendas-parlamentares": {
+    path: RD + "emendas-parlamentares-recebidas", filtro: "acumulado", chave: "codigoDoConvenio",
+    detalhe: { tabela: "CONVENIO" },
+    colunas: [
+      ["Código da emenda", "codigoDaEmenda"],
+      ["Número/Ano", "numeroAno"],
+      ["Autor", "autorDaEmenda"],
+      ["Esfera", "origemDoRecurso"],
+      ["Tipo de emenda", "tipoDeEmenda"],
+      ["Favorecido", "favorecido"],
+      ["Objeto", "objetoDoConvenio"],
+      ["Valor previsto", "valorPrevisto", "brl"],
+      ["Valor recebido", "valorRecebido", "brl"],
+      ["Valor executado", "valorExecutado", "brl"],
+      ["Ano da emenda", "anoDaEmenda"],
+      ["Número da emenda", "numeroDaEmenda"],
+      ["Tipo de repasse", "tipoDeRepasse"],
+    ],
+  },
+  // Emendas de bancada federais pagas ao município (e ao Fundo Municipal de Saúde), dos dados abertos do Tesouro
+  // Nacional: o mesmo arquivo do "Painel das Emendas Parlamentares Individuais e de Bancada". Não vem do portal.
+  "emendas-bancada": {
+    path: "https://www.tesourotransparente.gov.br/consultas/painel-das-emendas-parlamentares-individuais-e-de-bancada",
+    baixar: () => emendasDoTesouro({ tipos: ["Emenda de Bancada"] }),
   },
   "transferencias-realizadas": {
     path: RD + "transferencia-voluntaria-realizada", filtro: "acumulado", chave: "codigoDoEmpenho",

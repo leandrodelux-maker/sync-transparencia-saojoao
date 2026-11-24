@@ -368,7 +368,11 @@ async function sincronizar(nome) {
   const inicio = new Date().toISOString();
   try {
     let total, registros, aviso = null, detalhes = null;
-    if (dataset.extrair) {
+    if (dataset.baixar) {
+      // Fonte de dados abertos fora do portal (ex.: Tesouro Nacional): baixa e filtra, sem navegador.
+      registros = (await dataset.baixar(ANO)).map((r, i) => ({ ...r, ordem: i + 1 }));
+      total = registros.length;
+    } else if (dataset.extrair) {
       // Página simples: um scrape sem cache (maxAge 0) basta, sem navegador interativo.
       const res = await firecrawl("POST", "/scrape", { url: `${PORTAL}/${dataset.path}`, formats: ["markdown"], waitFor: 4000, maxAge: 0 });
       registros = dataset.extrair(res.data?.markdown || "", ANO).map((r, i) => ({ ...r, ordem: i + 1 }));
@@ -436,9 +440,10 @@ async function sincronizar(nome) {
   }
 }
 
-exigir(FC_KEY, "defina FIRECRAWL_API_KEY");
-if (!DRY_RUN) { exigir(SUPABASE_URL, "defina TRANSPARENCIA_SUPABASE_URL"); exigir(SERVICE_KEY, "defina TRANSPARENCIA_SUPABASE_SERVICE_ROLE_KEY"); }
 const nomes = ALVO === "todos" ? Object.keys(DATASETS) : [ALVO];
+// Fontes de dados abertos (ex.: Tesouro) não usam o Firecrawl.
+if (nomes.some((n) => !DATASETS[n]?.baixar)) exigir(FC_KEY, "defina FIRECRAWL_API_KEY");
+if (!DRY_RUN) { exigir(SUPABASE_URL, "defina TRANSPARENCIA_SUPABASE_URL"); exigir(SERVICE_KEY, "defina TRANSPARENCIA_SUPABASE_SERVICE_ROLE_KEY"); }
 let falhas = 0;
 for (const nome of nomes) {
   try { await sincronizar(nome); } catch (e) { falhas++; console.error(`  ERRO em ${nome}: ${e.message}`); }
