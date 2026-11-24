@@ -1,4 +1,4 @@
-name: Sincronizar Portal da Transparência
+name: Sincronizar Portal da Transparência (São João da Paraúna)
 
 # Copia os dados do portal Megasoft para o banco analítico (Supabase) que o site lê.
 # Repositório público: os minutos do GitHub Actions não são cobrados.

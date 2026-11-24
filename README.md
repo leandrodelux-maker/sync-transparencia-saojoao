@@ -1,4 +1,4 @@
-# Sincronização do Portal da Transparência
+# Sincronização do Portal da Transparência — São João da Paraúna
 
 Copia os dados do Portal da Transparência (Megasoft) para o banco analítico (Supabase) que o site da
 Prefeitura lê. Fica num repositório público separado do site para que os minutos do GitHub Actions não
@@ -40,6 +40,6 @@ node sync.mjs despesas --dry-run   # testa sem gravar no banco
 Agendamento num servidor Linux (`crontab -e`), com horário de Brasília no servidor:
 
 ```cron
-0 3 * * *  cd /opt/sync-transparencia && flock -n /tmp/sync.lock node sync.mjs todos  >> sync.log 2>&1
-30 * * * * cd /opt/sync-transparencia && flock -n /tmp/sync.lock node sync.mjs resumo >> sync.log 2>&1
+0 3 * * *  cd /opt/sync-transparencia-saojoao && flock -n /tmp/sync-saojoao.lock node sync.mjs todos  >> sync.log 2>&1
+30 * * * * cd /opt/sync-transparencia-saojoao && flock -n /tmp/sync-saojoao.lock node sync.mjs resumo >> sync.log 2>&1
 ```
