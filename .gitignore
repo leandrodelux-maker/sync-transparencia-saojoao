@@ -1,0 +1,5 @@
+.env
+.env.*
+!.env.example
+sync-*.json
+node_modules/
