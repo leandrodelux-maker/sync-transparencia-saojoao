@@ -9,6 +9,11 @@ sejam cobrados; o código do site continua privado.
 - `sync.mjs` abre o portal num navegador do Firecrawl, captura a API que a própria página usa e grava os
   registros na tabela `transparencia_registros` do banco analítico.
 - `datasets.mjs` lista os conjuntos (despesas, receitas, licitações, folha...).
+- Dois conjuntos vêm de fontes públicas fora do portal e não usam o Firecrawl: `emendas-bancada` (Tesouro
+  Nacional) e `diario-oficial-estado` (publicações do Diário Oficial do Estado de Goiás que citam o município,
+  pela busca pública de diariooficial.abc.go.gov.br). Este último grava por ano: a rodada diária atualiza o ano
+  corrente, e os anos anteriores entram uma vez com `node sync.mjs diario-oficial-estado 2025` (ou em
+  **Run workflow**, informando o conjunto e o ano).
 - Agendamento (`.github/workflows/sincronizar.yml`): tudo às 03:00 (Brasília) e o resumo da página
   inicial de hora em hora. Também roda manualmente em **Actions › Run workflow**.
 

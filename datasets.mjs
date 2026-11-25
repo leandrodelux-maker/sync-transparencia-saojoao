@@ -128,6 +128,83 @@ async function emendasDoTesouro({ tipos }) {
   return registros.sort((a, b) => b._ordem - a._ordem).map(({ _ordem, ...r }) => r);
 }
 
+// ---------- Diário Oficial do Estado de Goiás (busca pública da ABC, sem chave) ----------
+// A busca do site diariooficial.abc.go.gov.br devolve, em JSON, as páginas do Diário que contêm o termo
+// (10 por chamada, mais recentes primeiro, filtro por ano em "/y:AAAA"). Cada página vira um ou mais registros:
+//   - "Prefeitura": cada ato publicado pelo próprio município (bloco "São João da Paraúna Aviso de ..." que termina
+//     em "Protocolo NNN"), com o texto do ato;
+//   - "Estado": página de ato estadual (ou de outro órgão) que cita o município, com os trechos da citação.
+// Termos de uso do Diário: conteúdo público e gratuito; reprodução permitida com citação da fonte.
+const DOE = "https://diariooficial.abc.go.gov.br";
+const ATO_MUNICIPAL = "(?:Aviso|Extrato|Edital|Decreto|Portaria|Lei|Resultado|Homologa|Termo|Ratifica|Errata|Retifica|Convoca|Comunicado|Ato|Resolu|Contrato|Adjudica|Anula|Revoga|Suspens|Prorroga|Chamamento|Credenciamento|Julgamento|Notifica|Intima|Aditivo|Dispensa|Inexigibilidade)";
+const ASSUNTOS = [
+  ["Emenda parlamentar", /emenda (parlamentar|impositiva)/i],
+  ["ICMS e índices", /icms|[íi]ndice (de participa|definitivo|provis)|quota-parte|cota-parte/i],
+  ["Convênio ou repasse", /conv[êe]nio|termo de (fomento|colabora)|repasse|transfer[êe]ncia/i],
+  ["Consórcio", /cons[óo]rcio/i],
+  ["Licitação ou contrato", /licita[çc][ãa]o|preg[ãa]o|contrato|ata de registro|dispensa|inexigibilidade/i],
+  ["Saúde", /sa[úu]de|\bsus\b/i],
+  ["Educação", /educa[çc][ãa]o|escola|fundeb/i],
+  ["Pessoal", /nomea|exonera|designa|servidor/i],
+];
+const limpar = (s) => s.replace(/DIARIO OFICIAL DO ESTADO DE GOIAS\s+Assinado digitalmente pela ABC[\s\S]*?AUTENTICACAO:\s*\w+/gi, " ").replace(/\s+/g, " ").trim();
+const assunto = (t) => (ASSUNTOS.find(([, re]) => re.test(t)) || ["Outras citações"])[0];
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function diarioOficialEstado(ano) {
+  const termo = process.env.MUNICIPIO_NOME || "São João da Paraúna";
+  // Aceita o nome com ou sem acento (as tabelas do Estado costumam vir em maiúsculas sem acento).
+  const semAcento = termo.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const nomeRe = semAcento.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[aeiouc]/gi, (l) => ({ a: "[aáãâà]", e: "[eéê]", i: "[ií]", o: "[oóõô]", u: "[uú]", c: "[cç]" })[l.toLowerCase()]);
+  const atoRe = new RegExp(`${nomeRe}\\s+(${ATO_MUNICIPAL}[\\s\\S]*?)(?=Protocolo\\s*\\d{3,}|$)`, "gi");
+  const citaRe = new RegExp(nomeRe, "gi");
+  const registros = [];
+  let total = Infinity;
+  for (let pagina = 0; pagina * 10 < total && pagina < 200; pagina++) {
+    const url = `${DOE}/busca/busca/buscar/query/${pagina}/y:${ano}/?1=1&q=${encodeURIComponent(`"${termo}"`)}`;
+    const resp = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "sync-transparencia (consulta publica)" } });
+    if (!resp.ok) throw new Error(`busca do Diário Oficial do Estado: ${resp.status}`);
+    const json = await resp.json();
+    total = json.hits?.total ?? 0;
+    for (const h of json.hits?.hits ?? []) {
+      const s = h._source || {};
+      const texto = s.conteudo || "";
+      const edicao = (texto.slice(0, 300).match(/N[°º]\s*([\d.]+)/) || [])[1] || String(h.suplemento || "").replace(/\D+/g, "");
+      const base = {
+        "Data": s.data ? s.data.split("-").reverse().join("/") : "",
+        "Edição": edicao ? `nº ${Number(edicao.replace(/\D/g, "")).toLocaleString("pt-BR")}` : "",
+        "Página": String(s.pagina ?? ""),
+        "Link": `${DOE}/ver/${s.diario_id}/${s.pagina}/${encodeURIComponent(termo)}`,
+        "Fonte": "Diário Oficial do Estado de Goiás (Agência Brasil Central)",
+      };
+      const atos = [...texto.matchAll(atoRe)].map((m) => limpar(m[1])).filter((t) => t.length > 20);
+      if (atos.length) {
+        atos.forEach((ato, i) => {
+          const titulo = (ato.match(/^.{5,160}?(?:n[°º.]?\s*[\d][\d./-]*|(?=\.\s))/i) || [ato.slice(0, 120)])[0];
+          registros.push({ chave: `${h._id}-${i + 1}`, dados: { ...base, "Origem": "Prefeitura", "Assunto": assunto(ato), "Título": titulo.trim(), "Texto": ato.slice(0, 1500) } });
+        });
+        continue;
+      }
+      // Ato de outro órgão que cita o município: até três trechos em volta das citações.
+      const trechos = [];
+      for (const m of texto.matchAll(citaRe)) {
+        if (trechos.length >= 3) break;
+        const ini = Math.max(0, m.index - 260), fim = Math.min(texto.length, m.index + m[0].length + 260);
+        if (trechos.length && ini < trechos[trechos.length - 1].fim) continue;
+        trechos.push({ ini, fim, t: (ini > 0 ? "… " : "") + limpar(texto.slice(ini, fim)) + (fim < texto.length ? " …" : "") });
+      }
+      const junto = trechos.map((t) => t.t).join("\n\n");
+      // Título: o último ato identificado (portaria, decreto, resolução...) antes da primeira citação, na mesma página.
+      const antes = trechos.length ? texto.slice(Math.max(0, trechos[0].ini - 4000), trechos[0].ini + 260) : "";
+      const atosAntes = [...antes.matchAll(/\b(PORTARIA|DECRETO|RESOLU[ÇC][ÃA]O|EXTRATO|AVISO|LEI|EDITAL|TERMO ADITIVO|TERMO DE [A-ZÇÃÉ ]{3,30}|ATO|DESPACHO|CONV[ÊE]NIO|INSTRU[ÇC][ÃA]O NORMATIVA)\b[^.\n]{0,90}?N[º°.]?\s*[\d][\d./-]*/g)];
+      const titulo = atosAntes.length ? limpar(atosAntes[atosAntes.length - 1][0]).replace(/[/.-]+$/, "") : `Citação do município (${assunto(junto).toLowerCase()})`;
+      registros.push({ chave: h._id, dados: { ...base, "Origem": "Estado", "Assunto": assunto(junto), "Título": titulo, "Texto": junto } });
+    }
+    await espera(400);                                                  // educado com o servidor da ABC
+  }
+  return registros;
+}
+
 export const DATASETS = {
   // Totais da página inicial do portal ("Receitas Recebidas 2026" / "Despesas Liquidadas 2026").
   resumo: {
@@ -358,6 +435,12 @@ export const DATASETS = {
   "emendas-bancada": {
     path: "https://www.tesourotransparente.gov.br/consultas/painel-das-emendas-parlamentares-individuais-e-de-bancada",
     baixar: () => emendasDoTesouro({ tipos: ["Emenda de Bancada"] }),
+  },
+  // Publicações do Diário Oficial do Estado de Goiás que citam o município (atos da Prefeitura e do Estado).
+  // Grava por exercício: a rodada diária atualiza o ano corrente; anos anteriores com `node sync.mjs diario-oficial-estado 2025`.
+  "diario-oficial-estado": {
+    path: DOE,
+    baixar: (ano) => diarioOficialEstado(ano),
   },
   "transferencias-realizadas": {
     path: RD + "transferencia-voluntaria-realizada", filtro: "acumulado", chave: "codigoDoEmpenho",
